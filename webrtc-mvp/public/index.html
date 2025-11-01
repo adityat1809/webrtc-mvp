@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Telemedicine Platform</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="landing">
+  <div class="card">
+    <h1>Welcome to MedConnect</h1>
+    <p>Select your role to start a session:</p>
+
+    <div class="roles">
+      <button onclick="selectRole('doctor')">👨‍⚕️ Doctor</button>
+      <button onclick="selectRole('patient')">🧑‍⚕️ Patient</button>
+    </div>
+  </div>
+
+  <script>
+    function selectRole(role) {
+      localStorage.setItem('role', role);
+      window.location.href = '/join';
+    }
+  </script>
+</body>
+</html>
+    

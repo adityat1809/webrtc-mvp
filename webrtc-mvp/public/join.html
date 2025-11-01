@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Join Consultation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="join">
+  <div class="card">
+    <h2 id="roleTitle"></h2>
+    <input id="roomInput" placeholder="Enter room name">
+    <button id="joinBtn">Join Room</button>
+  </div>
+
+  <script>
+    const role = localStorage.getItem('role');
+    document.getElementById('roleTitle').textContent =
+      role === 'doctor' ? 'Doctor Portal' : 'Patient Portal';
+
+    document.getElementById('joinBtn').onclick = () => {
+      const room = document.getElementById('roomInput').value.trim();
+      if (!room) return alert('Enter a room name');
+      localStorage.setItem('room', room);
+      window.location.href = '/call';
+    };
+  </script>
+</body>
+</html>

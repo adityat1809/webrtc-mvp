@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Telemedicine Session</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="flex flex-col items-center justify-center min-h-screen bg-gray-100 text-gray-900">
+
+  <!-- Header -->
+  <h1 class="text-3xl font-bold mb-8 flex items-center gap-2">
+    <span>🩺</span> Telemedicine Session
+  </h1>
+
+  <!-- Waiting Screen -->
+<div id="waitingScreen" class="fixed inset-0 bg-gray-900 bg-opacity-80 flex flex-col items-center justify-center text-white text-xl z-50">
+    <div class="flex flex-col items-center gap-4">
+      <div class="animate-spin rounded-full h-12 w-12 border-t-4 border-blue-500"></div>
+      <p>Waiting for the other user to join...</p>
+    </div>
+  </div>
+  
+
+  <!-- Video Container -->
+  <div class="flex flex-col md:flex-row items-center justify-center gap-8">
+    <!-- Local Video -->
+    <div class="flex flex-col items-center">
+      <div class="bg-black rounded-2xl overflow-hidden shadow-xl w-80 h-60 md:w-96 md:h-72">
+        <video id="localVideo" autoplay muted playsinline class="w-full h-full object-cover"></video>
+      </div>
+      <p class="mt-2 text-sm font-semibold">You</p>
+    </div>
+
+    <!-- Remote Video -->
+    <div class="flex flex-col items-center">
+      <div class="bg-black rounded-2xl overflow-hidden shadow-xl w-80 h-60 md:w-96 md:h-72">
+        <video id="remoteVideo" autoplay playsinline class="w-full h-full object-cover"></video>
+      </div>
+      <p class="mt-2 text-sm font-semibold">Remote</p>
+    </div>
+  </div>
+
+   <!-- Buttons -->
+   <div class="flex gap-6 mt-10">
+    <button id="muteBtn" class="bg-blue-600 hover:bg-blue-700 px-5 py-2 rounded-lg text-white font-medium">Mute</button>
+    <button id="cameraBtn" class="bg-blue-600 hover:bg-blue-700 px-5 py-2 rounded-lg text-white font-medium">Camera Off</button>
+    <button id="endBtn" class="bg-red-600 hover:bg-red-700 px-5 py-2 rounded-lg text-white font-medium">End Call</button>
+  </div>
+    
+  <!-- Chat Box -->
+    <div class="mt-10 w-full max-w-xl bg-white rounded-xl shadow-lg p-4">
+        <h2 class="text-lg font-semibold mb-2">💬 Chat</h2>
+        <div id="chatBox" class="h-60 overflow-y-auto border rounded-lg p-3 bg-gray-50 mb-3 text-sm"></div>
+
+        <div class="flex gap-2">
+            <input id="chatInput" type="text" placeholder="Type a message..."
+                    class="flex-grow border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button id="sendBtn"
+                    class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-white font-medium">
+            Send
+            </button>
+        </div>
+        </div>
+    
+
+  <!-- Include scripts at the END so the video elements exist -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Wait for the DOM to load fully before running client.js
+    window.addEventListener('DOMContentLoaded', () => {
+      console.log("✅ DOM ready, loading client.js...");
+      const script = document.createElement('script');
+      script.src = '/client.js';
+      document.body.appendChild(script);
+    });
+  </script>
+
+</body>
+</html>
