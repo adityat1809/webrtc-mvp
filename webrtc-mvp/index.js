@@ -10,15 +10,15 @@ const io = new Server(server);
 app.use(express.static('public'));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+  res.sendFile(path.join(__dirname, '..public/index.html'));
 });
 
 app.get('/join', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/join.html'));
+  res.sendFile(path.join(__dirname, '..public/join.html'));
 });
 
 app.get('/call', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/call.html'));
+  res.sendFile(path.join(__dirname, '..public/call.html'));
 });
 
 io.on('connection', (socket) => {
