@@ -15,7 +15,6 @@ const role = localStorage.getItem('role');
 
 let isReady = false;
 let otherReady = false;
-let callStarted = false; // ✅ Prevents duplicate offers
 
 if (!roomId) {
   alert('No room found. Please join again.');
@@ -49,6 +48,7 @@ async function initMedia() {
 // --- Create PeerConnection ---
 function createPeerConnection() {
   peerConnection = new RTCPeerConnection(servers);
+  addConnectionMonitor(); // ✅ monitor state
 
   localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
@@ -74,14 +74,44 @@ function createPeerConnection() {
   }
 }
 
-// --- Chat Setup ---
+// --- Monitor connection state ---
+function addConnectionMonitor() {
+  if (!peerConnection) return;
+  peerConnection.onconnectionstatechange = () => {
+    console.log('Connection state:', peerConnection.connectionState);
+    if (peerConnection.connectionState === 'connected') {
+      console.log('✅ Peer connected, starting stats monitor');
+      startStatsMonitor();
+    } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'closed') {
+      stopStatsMonitor();
+    }
+  };
+}
+
+// --- Chat Setup + Ping RTT ---
 function setupDataChannel(channel) {
   const chatBox = document.getElementById('chatBox');
   const chatInput = document.getElementById('chatInput');
   const sendBtn = document.getElementById('sendBtn');
 
-  channel.onopen = () => console.log('💬 Chat channel opened');
+  channel.onopen = () => {
+    console.log('💬 Chat channel opened');
+    startStatsMonitor();
+  };
+
   channel.onmessage = (event) => {
+    try {
+      const payload = typeof event.data === 'string' ? JSON.parse(event.data) : null;
+      if (payload && payload.type === 'pc-ping') {
+        channel.send(JSON.stringify({ type: 'pc-pong', ts: payload.ts }));
+        return;
+      } else if (payload && payload.type === 'pc-pong') {
+        const now = performance.now();
+        lastRTT = now - payload.ts;
+        return;
+      }
+    } catch (e) {}
+
     const msg = document.createElement('div');
     msg.className = 'text-left mb-1';
     msg.innerHTML = `<span class="bg-gray-200 px-2 py-1 rounded-lg inline-block">${event.data}</span>`;
@@ -106,18 +136,16 @@ function setupDataChannel(channel) {
   chatInput.onkeypress = (e) => { if (e.key === 'Enter') send(); };
 }
 
-// --- Socket events ---
+// --- Signaling Logic ---
 socket.on('connect', () => {
   console.log('🔌 Connected to signaling server');
 });
 
-// --- Start Media and mark as ready ---
 initMedia().then(() => {
   isReady = true;
   socket.emit('ready', roomId);
 });
 
-// --- When another peer is ready ---
 socket.on('ready', () => {
   console.log('👥 A user is ready');
   otherReady = true;
@@ -127,56 +155,41 @@ socket.on('ready', () => {
     waitingScreen.style.display = 'none';
   }
 
-  // ✅ Ensure only the doctor starts the call ONCE
-  if (isReady && otherReady && role === 'doctor' && !callStarted) {
-    callStarted = true;
-    console.log('📞 Both ready — doctor starting call');
-    startCall();
-  } else if (role !== 'doctor') {
-    console.log('🧏 Waiting for offer from doctor...');
+  if (isReady && otherReady) {
+    if (role === 'doctor') {
+      console.log('📞 Both ready — doctor starting call');
+      startCall();
+    } else {
+      console.log('🧏 Waiting for offer from doctor...');
+    }
   }
 });
 
-// --- Start call ---
-async function startCall() {
-  try {
-    createPeerConnection();
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    socket.emit('offer', { offer, roomId });
-    console.log('📤 Offer sent');
-  } catch (err) {
-    console.error('❌ Error creating offer:', err);
-  }
+function startCall() {
+  console.log('📞 Starting call (doctor)');
+  createPeerConnection();
+
+  peerConnection.createOffer()
+    .then(offer => {
+      peerConnection.setLocalDescription(offer);
+      socket.emit('offer', { offer, roomId });
+    })
+    .catch(err => console.error('❌ Error creating offer:', err));
 }
 
-// --- Handle Offer / Answer / ICE ---
 socket.on('offer', async (data) => {
   console.log('📨 Offer received');
-  if (peerConnection && peerConnection.signalingState !== 'stable') {
-    console.warn('⚠️ Skipping duplicate offer');
-    return;
-  }
   createPeerConnection();
   await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
 
   const answer = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answer);
   socket.emit('answer', { answer, roomId });
-  console.log('📤 Answer sent');
 });
 
 socket.on('answer', async (data) => {
   console.log('✅ Answer received');
-  try {
-    if (peerConnection.signalingState === 'have-local-offer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-    } else {
-      console.warn('⚠️ Skipped answer — wrong state:', peerConnection.signalingState);
-    }
-  } catch (err) {
-    console.error('❌ Error applying answer:', err);
-  }
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
 });
 
 socket.on('ice-candidate', async (data) => {
@@ -217,182 +230,6 @@ cameraBtn.addEventListener('click', () => {
   cameraBtn.classList.toggle('bg-blue-600', !isCameraOff);
 });
 
-
-
-// ====== Call Stats Monitor ======
-let statsInterval = null;
-let lastStats = {
-  timestamp: 0,
-  bytesSent: 0,
-  bytesReceived: 0,
-  packetsLost: 0,
-  packetsReceived: 0
-};
-const STATS_INTERVAL_MS = 1000; // sample every 1 second
-
-// latency: implemented via datachannel ping/pong
-let lastPingTime = null;
-let lastRTT = null;
-function sendPing() {
-  if (dataChannel && dataChannel.readyState === 'open') {
-    lastPingTime = performance.now();
-    // send small ping object with unique id + timestamp
-    dataChannel.send(JSON.stringify({ type: 'pc-ping', ts: lastPingTime }));
-  }
-}
-
-// handle incoming ping/pong on setupDataChannel - extend that function
-// inside setupDataChannel(channel) add:
-channel.onmessage = (event) => {
-  try {
-    const payload = typeof event.data === 'string' ? JSON.parse(event.data) : null;
-    if (payload && payload.type === 'pc-ping') {
-      // echo back as pong with original ts
-      channel.send(JSON.stringify({ type: 'pc-pong', ts: payload.ts }));
-      return;
-    } else if (payload && payload.type === 'pc-pong') {
-      // compute RTT
-      const now = performance.now();
-      const rtt = now - payload.ts;
-      lastRTT = rtt;
-      // preserve older onmessage behavior for text messages:
-      // if payload contains .text, or if it's not a ping/pong, fall through below
-      // (the code will continue to treat non-json or other messages below)
-    }
-  } catch (e) {
-    // not JSON ping/pong; continue to treat as normal chat message
-  }
-
-  // original chat message handling (your existing code)
-  try {
-    // If the message was a JSON ping/pong we've already handled it and returned above.
-    if (typeof event.data === 'string') {
-      // If it's not ping/pong JSON, treat as chat text
-      // (this duplicates your existing handler—ensure you keep the original UI update behavior)
-    }
-  } catch (err) {
-    console.warn('datachannel msg handling error', err);
-  }
-};
-
-// (If you already set channel.onmessage in your setupDataChannel, merge the logic above
-// into that existing handler rather than creating a second onmessage assignment.)
-
-// Stats collection using getStats()
-async function collectStats() {
-  if (!peerConnection) return;
-  try {
-    const statsReport = await peerConnection.getStats(null);
-    // The report is a map of stats objects. We'll find inbound-rtp and outbound-rtp
-    let bytesSent = 0;
-    let bytesReceived = 0;
-    let packetsLost = 0;
-    let packetsReceived = 0;
-    let jitter = null;
-
-    statsReport.forEach(stat => {
-      // WebRTC uses type 'outbound-rtp' and 'inbound-rtp' in Chrome
-      if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
-        // bytesSent present
-        if (typeof stat.bytesSent === 'number') bytesSent += stat.bytesSent;
-      }
-      if (stat.type === 'outbound-rtp' && stat.kind === 'audio') {
-        if (typeof stat.bytesSent === 'number') bytesSent += stat.bytesSent;
-      }
-      if (stat.type === 'inbound-rtp' && (stat.kind === 'video' || stat.kind === 'audio')) {
-        if (typeof stat.bytesReceived === 'number') bytesReceived += stat.bytesReceived;
-        if (typeof stat.packetsLost === 'number') packetsLost += stat.packetsLost;
-        if (typeof stat.packetsReceived === 'number') packetsReceived += stat.packetsReceived;
-        // jitter is in seconds (RFC3550) -> convert to ms if present (take last value if multiple)
-        if (typeof stat.jitter === 'number') jitter = stat.jitter * 1000;
-      }
-
-      // Some browsers put aggregate bytes in 'transport' or 'candidate-pair' fields.
-      // We prefer RTP stats above, but you can extend this if needed.
-    });
-
-    const now = performance.now();
-    const deltaSec = lastStats.timestamp ? (now - lastStats.timestamp) / 1000 : STATS_INTERVAL_MS / 1000;
-
-    // compute bandwidth (bits/sec) by diffing bytes
-    const sentDelta = bytesSent - (lastStats.bytesSent || 0);
-    const recvDelta = bytesReceived - (lastStats.bytesReceived || 0);
-
-    const sendBps = sentDelta > 0 ? (sentDelta * 8) / deltaSec : 0;
-    const recvBps = recvDelta > 0 ? (recvDelta * 8) / deltaSec : 0;
-
-    // compute packet loss percentage since last sample
-    let pktLossPct = 0;
-    const totalReceived = packetsReceived - (lastStats.packetsReceived || 0);
-    const lostDelta = packetsLost - (lastStats.packetsLost || 0);
-    if (totalReceived + lostDelta > 0) {
-      pktLossPct = ((lostDelta > 0 ? lostDelta : 0) / (totalReceived + (lostDelta > 0 ? lostDelta : 0))) * 100;
-    }
-
-    // update lastStats
-    lastStats = {
-      timestamp: now,
-      bytesSent,
-      bytesReceived,
-      packetsLost,
-      packetsReceived
-    };
-
-    // push to UI
-    const elLatency = document.getElementById('stat-latency');
-    const elJitter = document.getElementById('stat-jitter');
-    const elPktLoss = document.getElementById('stat-pktloss');
-    const elSendBw = document.getElementById('stat-send-bw');
-    const elRecvBw = document.getElementById('stat-recv-bw');
-    const elUpdated = document.getElementById('stat-updated');
-
-    if (elLatency) elLatency.textContent = lastRTT ? Math.round(lastRTT) : '—';
-    if (elJitter) elJitter.textContent = jitter !== null ? Math.round(jitter) : '—';
-    if (elPktLoss) elPktLoss.textContent = pktLossPct.toFixed(2);
-    if (elSendBw) elSendBw.textContent = (sendBps / 1024).toFixed(2);
-    if (elRecvBw) elRecvBw.textContent = (recvBps / 1024).toFixed(2);
-    if (elUpdated) elUpdated.textContent = new Date().toLocaleTimeString();
-
-  } catch (err) {
-    console.warn('collectStats error', err);
-  }
-}
-
-// start/stop monitor functions
-function startStatsMonitor() {
-  if (statsInterval) return;
-  // reset baseline
-  lastStats = { timestamp: 0, bytesSent: 0, bytesReceived: 0, packetsLost: 0, packetsReceived: 0 };
-  // ping frequently (every 1s) to get RTT via datachannel
-  const pingTimer = setInterval(() => {
-    sendPing();
-  }, STATS_INTERVAL_MS);
-
-  // collect stats on interval
-  statsInterval = setInterval(() => {
-    collectStats();
-  }, STATS_INTERVAL_MS);
-
-  // store pingTimer on the interval so we can clear both
-  statsInterval.pingTimer = pingTimer;
-}
-
-function stopStatsMonitor() {
-  if (!statsInterval) return;
-  clearInterval(statsInterval);
-  if (statsInterval.pingTimer) clearInterval(statsInterval.pingTimer);
-  statsInterval = null;
-  lastRTT = null;
-  lastStats = { timestamp: 0, bytesSent: 0, bytesReceived: 0, packetsLost: 0, packetsReceived: 0 };
-  // clear UI
-  ['stat-latency','stat-jitter','stat-pktloss','stat-send-bw','stat-recv-bw','stat-updated'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = '—';
-  });
-}
-
-
-
 // --- End Call ---
 function endCall(cleanupOnly = false) {
   if (peerConnection) {
@@ -416,3 +253,74 @@ socket.on('call-ended', () => {
   endCall(true);
   window.location.href = '/';
 });
+
+// --- Real-time Stats Monitor ---
+let statsInterval = null;
+let lastStats = null;
+let lastRTT = 0;
+
+function startStatsMonitor() {
+  if (statsInterval) return;
+
+  statsInterval = setInterval(async () => {
+    if (!peerConnection) return;
+
+    const stats = await peerConnection.getStats();
+    let jitter = 0, packetsLost = 0, packetsSent = 0, packetsRecv = 0;
+    let bitrateSend = 0, bitrateRecv = 0;
+
+    stats.forEach(report => {
+      if (report.type === 'outbound-rtp' && !report.isRemote) {
+        bitrateSend += report.bytesSent;
+        packetsSent += report.packetsSent || 0;
+      } else if (report.type === 'inbound-rtp' && !report.isRemote) {
+        bitrateRecv += report.bytesReceived;
+        packetsRecv += report.packetsReceived || 0;
+        packetsLost += report.packetsLost || 0;
+        jitter = report.jitter ? report.jitter * 1000 : jitter;
+      }
+    });
+
+    const now = Date.now();
+    if (lastStats) {
+      const timeDiff = (now - lastStats.time) / 1000;
+      const sendBw = ((bitrateSend - lastStats.bitrateSend) * 8) / timeDiff / 1000;
+      const recvBw = ((bitrateRecv - lastStats.bitrateRecv) * 8) / timeDiff / 1000;
+      const totalPackets = packetsRecv + packetsLost;
+      const loss = totalPackets > 0 ? (packetsLost / totalPackets) * 100 : 0;
+
+      updateStatsUI(lastRTT.toFixed(1), jitter.toFixed(1), loss.toFixed(2), sendBw.toFixed(1), recvBw.toFixed(1));
+    }
+
+    lastStats = {
+      time: now,
+      bitrateSend,
+      bitrateRecv
+    };
+
+    // send ping
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(JSON.stringify({ type: 'pc-ping', ts: performance.now() }));
+    }
+  }, 1000);
+}
+
+function stopStatsMonitor() {
+  if (statsInterval) {
+    clearInterval(statsInterval);
+    statsInterval = null;
+  }
+}
+
+function updateStatsUI(latency, jitter, loss, sendBw, recvBw) {
+  const el = document.getElementById('statsBox');
+  if (!el) return;
+  el.innerHTML = `
+    Latency (RTT): ${latency} ms<br>
+    Jitter: ${jitter} ms<br>
+    Packet loss: ${loss} %<br>
+    Send bandwidth: ${sendBw} kb/s<br>
+    Recv bandwidth: ${recvBw} kb/s<br>
+    Last update: ${new Date().toLocaleTimeString()}
+  `;
+}
