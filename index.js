@@ -7,20 +7,31 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.static('public'));
+// ✅ Correct port for Render or local
+const PORT = process.env.PORT || 3000;
 
+// ✅ Serve static files from 'public' directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ✅ Serve pages correctly
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..public/index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/join', (req, res) => {
-  res.sendFile(path.join(__dirname, '..public/join.html'));
+  res.sendFile(path.join(__dirname, 'public', 'join.html'));
 });
 
 app.get('/call', (req, res) => {
-  res.sendFile(path.join(__dirname, '..public/call.html'));
+  res.sendFile(path.join(__dirname, 'public', 'call.html'));
 });
 
+// ✅ Optional catch-all route for SPA support
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// --- WebRTC Socket Logic ---
 io.on('connection', (socket) => {
   console.log('🟢 User connected:', socket.id);
 
@@ -32,27 +43,18 @@ io.on('connection', (socket) => {
     const clients = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
     console.log(`Room ${roomId} now has ${clients.length} user(s)`);
 
-    // When second user joins, both are ready
     if (clients.length === 2) {
       io.to(roomId).emit('ready');
-      socket.on('end-call', () => {
-  if (socket.roomId) {
-    console.log(`☎️ Call ended by ${socket.id} in room ${socket.roomId}`);
-    socket.to(socket.roomId).emit('call-ended');
-  }
-});
-
     }
-    socket.on('end-call', () => {
-        if (socket.roomId) {
-          console.log(`☎️ Call ended by ${socket.id} in room ${socket.roomId}`);
-          socket.to(socket.roomId).emit('call-ended');
-        }
-      });
-      
   });
 
-  // Explicit ready event for reliability
+  socket.on('end-call', () => {
+    if (socket.roomId) {
+      console.log(`☎️ Call ended by ${socket.id} in room ${socket.roomId}`);
+      socket.to(socket.roomId).emit('call-ended');
+    }
+  });
+
   socket.on('ready', (roomId) => {
     socket.to(roomId).emit('ready');
   });
@@ -71,7 +73,6 @@ io.on('connection', (socket) => {
     socket.to(data.roomId).emit('ice-candidate', data);
   });
 
-  // --- Chat ---
   socket.on('chat-message', (data) => {
     console.log(`💬 ${data.sender}: ${data.message}`);
     socket.to(data.roomId).emit('chat-message', {
@@ -88,8 +89,6 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
