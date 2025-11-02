@@ -15,7 +15,7 @@ const role = localStorage.getItem('role');
 
 let isReady = false;
 let otherReady = false;
-
+let callStarted = false; // ✅ Prevents duplicate offers
 
 if (!roomId) {
   alert('No room found. Please join again.');
@@ -32,8 +32,6 @@ const servers = {
     }
   ]
 };
-
-
 
 // --- Initialize media devices ---
 async function initMedia() {
@@ -108,66 +106,77 @@ function setupDataChannel(channel) {
   chatInput.onkeypress = (e) => { if (e.key === 'Enter') send(); };
 }
 
-// // --- Signaling Logic ---
-// let isReady = false;
-// let otherReady = false;
-
+// --- Socket events ---
 socket.on('connect', () => {
   console.log('🔌 Connected to signaling server');
 });
 
 // --- Start Media and mark as ready ---
 initMedia().then(() => {
-    isReady = true;
-    socket.emit('ready', roomId);
-  });
-  
-  // --- When another peer is ready ---
-  socket.on('ready', () => {
-    console.log('👥 A user is ready');
-    otherReady = true;
-  
-    const waitingScreen = document.getElementById('waitingScreen');
-    if (isReady && otherReady && waitingScreen) {
-      waitingScreen.style.display = 'none';
-    }
-  
-    if (isReady && otherReady) {
-      if (role === 'doctor') {
-        console.log('📞 Both ready — doctor starting call');
-        startCall();
-      } else {
-        console.log('🧏 Waiting for offer from doctor...');
-      }
-    }
-  });
-  
+  isReady = true;
+  socket.emit('ready', roomId);
+});
 
-function startCall() {
-  console.log('📞 Starting call (doctor)');
-  createPeerConnection();
+// --- When another peer is ready ---
+socket.on('ready', () => {
+  console.log('👥 A user is ready');
+  otherReady = true;
 
-  peerConnection.createOffer()
-    .then(offer => {
-      peerConnection.setLocalDescription(offer);
-      socket.emit('offer', { offer, roomId });
-    })
-    .catch(err => console.error('❌ Error creating offer:', err));
+  const waitingScreen = document.getElementById('waitingScreen');
+  if (isReady && otherReady && waitingScreen) {
+    waitingScreen.style.display = 'none';
+  }
+
+  // ✅ Ensure only the doctor starts the call ONCE
+  if (isReady && otherReady && role === 'doctor' && !callStarted) {
+    callStarted = true;
+    console.log('📞 Both ready — doctor starting call');
+    startCall();
+  } else if (role !== 'doctor') {
+    console.log('🧏 Waiting for offer from doctor...');
+  }
+});
+
+// --- Start call ---
+async function startCall() {
+  try {
+    createPeerConnection();
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    socket.emit('offer', { offer, roomId });
+    console.log('📤 Offer sent');
+  } catch (err) {
+    console.error('❌ Error creating offer:', err);
+  }
 }
 
+// --- Handle Offer / Answer / ICE ---
 socket.on('offer', async (data) => {
   console.log('📨 Offer received');
+  if (peerConnection && peerConnection.signalingState !== 'stable') {
+    console.warn('⚠️ Skipping duplicate offer');
+    return;
+  }
   createPeerConnection();
   await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
 
   const answer = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answer);
   socket.emit('answer', { answer, roomId });
+  console.log('📤 Answer sent');
 });
 
 socket.on('answer', async (data) => {
   console.log('✅ Answer received');
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+  try {
+    if (peerConnection.signalingState === 'have-local-offer') {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+    } else {
+      console.warn('⚠️ Skipped answer — wrong state:', peerConnection.signalingState);
+    }
+  } catch (err) {
+    console.error('❌ Error applying answer:', err);
+  }
 });
 
 socket.on('ice-candidate', async (data) => {
@@ -230,10 +239,4 @@ socket.on('call-ended', () => {
   alert('📞 The other user has ended the call.');
   endCall(true);
   window.location.href = '/';
-});
-
-// --- Start ---
-initMedia().then(() => {
-  isReady = true;
-  socket.emit('ready', roomId);
 });
