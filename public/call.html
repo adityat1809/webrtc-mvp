@@ -63,6 +63,20 @@
             </button>
         </div>
         </div>
+
+    <!-- Stats Panel -->
+<div id="statsPanel" class="mt-6 w-full max-w-xl bg-white rounded-xl shadow-lg p-4 text-sm">
+  <h3 class="font-semibold mb-2">📊 Call Stats</h3>
+  <div class="grid grid-cols-2 gap-2">
+    <div>Latency (RTT): <span id="stat-latency">—</span> ms</div>
+    <div>Jitter: <span id="stat-jitter">—</span> ms</div>
+    <div>Packet loss: <span id="stat-pktloss">—</span> %</div>
+    <div>Send bandwidth: <span id="stat-send-bw">—</span> kb/s</div>
+    <div>Recv bandwidth: <span id="stat-recv-bw">—</span> kb/s</div>
+    <div>Last update: <span id="stat-updated">—</span></div>
+  </div>
+</div>
+
     
 
   <!-- Include scripts at the END so the video elements exist -->
