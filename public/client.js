@@ -316,11 +316,11 @@ function updateStatsUI(latency, jitter, loss, sendBw, recvBw) {
   const el = document.getElementById('statsBox');
   if (!el) return;
   el.innerHTML = `
-    Latency (RTT): ${latency} ms<br>
-    Jitter: ${jitter} ms<br>
-    Packet loss: ${loss} %<br>
-    Send bandwidth: ${sendBw} kb/s<br>
-    Recv bandwidth: ${recvBw} kb/s<br>
-    Last update: ${new Date().toLocaleTimeString()}
+    // Latency (RTT): ${latency} ms<br>
+    // Jitter: ${jitter} ms<br>
+    // Packet loss: ${loss} %<br>
+    // Send bandwidth: ${sendBw} kb/s<br>
+    // Recv bandwidth: ${recvBw} kb/s<br>
+    // Last update: ${new Date().toLocaleTimeString()}
   `;
 }
