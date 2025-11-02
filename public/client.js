@@ -1,3 +1,4 @@
+// public/client.js (replace your file with this)
 const socket = io();
 
 const localVideo = document.getElementById('localVideo');
@@ -6,25 +7,25 @@ const endBtn = document.getElementById('endBtn');
 const muteBtn = document.getElementById('muteBtn');
 const cameraBtn = document.getElementById('cameraBtn');
 
-let localStream;
-let peerConnection;
-let dataChannel;
+let localStream = null;
+let peerConnection = null;
+let dataChannel = null;
+let createdOffer = false; // guard to avoid duplicate offers
 
 const roomId = localStorage.getItem('room');
-const role = localStorage.getItem('role');
-
-let isReady = false;
-let otherReady = false;
-
+const role = localStorage.getItem('role'); // expected 'doctor' or something else
 
 if (!roomId) {
   alert('No room found. Please join again.');
   window.location.href = '/';
 }
 
+console.log('🔎 roomId:', roomId, ' role:', role);
+
 const servers = {
   iceServers: [
     { urls: ['stun:stun.l.google.com:19302'] },
+    // Keep TURN only if you have valid TURN credentials. This is for testing.
     {
       urls: 'turn:relay.metered.ca:80',
       username: 'openai',
@@ -33,46 +34,70 @@ const servers = {
   ]
 };
 
-
-// --- Initialize media devices ---
+// --- Initialize media devices (only call once) ---
 async function initMedia() {
+  if (localStream) return localStream;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     localVideo.srcObject = localStream;
-    console.log('✅ Media initialized');
+    console.log('✅ Media initialized, tracks:', localStream.getTracks().map(t => t.kind));
+    // join room after media allowed
     socket.emit('join', roomId);
+    return localStream;
   } catch (err) {
     console.error('❌ Error accessing media devices:', err);
     alert('Please allow camera and microphone access.');
+    throw err;
   }
 }
 
-// --- Create PeerConnection ---
+// --- Create PeerConnection (idempotent) ---
 function createPeerConnection() {
+  if (peerConnection) return peerConnection;
+  console.log('🔧 Creating RTCPeerConnection with servers:', servers);
   peerConnection = new RTCPeerConnection(servers);
 
-  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+  // add local tracks
+  if (localStream) {
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+  }
 
   peerConnection.ontrack = (event) => {
-    console.log('🎥 Remote stream received');
+    console.log('🎥 Remote stream received (ontrack)', event.streams);
     remoteVideo.srcObject = event.streams[0];
+    // mobile browsers sometimes need an explicit play
+    remoteVideo.play().catch(e => console.warn('remoteVideo.play() error:', e));
   };
 
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
+      console.log('🔹 Emitting ICE candidate', event.candidate);
       socket.emit('ice-candidate', { candidate: event.candidate, roomId });
     }
   };
 
+  peerConnection.onconnectionstatechange = () => {
+    console.log('🔁 PeerConnection state:', peerConnection.connectionState);
+  };
+
+  peerConnection.oniceconnectionstatechange = () => {
+    console.log('🔁 ICE connection state:', peerConnection.iceConnectionState);
+  };
+
+  // data channel setup
   if (role === 'doctor') {
+    console.log('🩺 role doctor -> creating data channel');
     dataChannel = peerConnection.createDataChannel('chat');
     setupDataChannel(dataChannel);
   } else {
     peerConnection.ondatachannel = (event) => {
+      console.log('📥 ondatachannel event');
       dataChannel = event.channel;
       setupDataChannel(dataChannel);
     };
   }
+
+  return peerConnection;
 }
 
 // --- Chat Setup ---
@@ -81,7 +106,7 @@ function setupDataChannel(channel) {
   const chatInput = document.getElementById('chatInput');
   const sendBtn = document.getElementById('sendBtn');
 
-  channel.onopen = () => console.log('💬 Chat channel opened');
+  channel.onopen = () => console.log('💬 Chat channel opened (state=' + channel.readyState + ')');
   channel.onmessage = (event) => {
     const msg = document.createElement('div');
     msg.className = 'text-left mb-1';
@@ -92,8 +117,14 @@ function setupDataChannel(channel) {
 
   const send = () => {
     const message = chatInput.value.trim();
-    if (!message || channel.readyState !== 'open') return;
-
+    if (!message) return;
+    if (!channel || channel.readyState !== 'open') {
+      console.warn('❗ Data channel not open. Falling back to socket chat.');
+      // fallback: socket-based chat if datachannel unavailable
+      socket.emit('chat-message', { sender: role || 'user', message, roomId });
+      chatInput.value = '';
+      return;
+    }
     channel.send(message);
     const msg = document.createElement('div');
     msg.className = 'text-right mb-1';
@@ -107,107 +138,114 @@ function setupDataChannel(channel) {
   chatInput.onkeypress = (e) => { if (e.key === 'Enter') send(); };
 }
 
-// // --- Signaling Logic ---
-// let isReady = false;
-// let otherReady = false;
-
+// --- Signaling listeners & call flow ---
 socket.on('connect', () => {
-  console.log('🔌 Connected to signaling server');
+  console.log('🔌 Connected to signaling server, socket id:', socket.id);
 });
 
-// --- Start Media and mark as ready ---
-initMedia().then(() => {
-    isReady = true;
-    socket.emit('ready', roomId);
-  });
-  
-  // --- When another peer is ready ---
-  socket.on('ready', () => {
-    console.log('👥 A user is ready');
-    otherReady = true;
-  
-    const waitingScreen = document.getElementById('waitingScreen');
-    if (isReady && otherReady && waitingScreen) {
-      waitingScreen.style.display = 'none';
-    }
-  
-    if (isReady && otherReady) {
-      if (role === 'doctor') {
-        console.log('📞 Both ready — doctor starting call');
-        startCall();
-      } else {
-        console.log('🧏 Waiting for offer from doctor...');
-      }
-    }
-  });
-  
+socket.on('ready', (payload) => {
+  console.log('👥 received ready', payload);
+  // hide waiting screen if present
+  const waitingScreen = document.getElementById('waitingScreen');
+  if (waitingScreen) waitingScreen.style.display = 'none';
 
-function startCall() {
-  console.log('📞 Starting call (doctor)');
+  // create peer connection now (idempotent)
   createPeerConnection();
 
-  peerConnection.createOffer()
-    .then(offer => {
-      peerConnection.setLocalDescription(offer);
-      socket.emit('offer', { offer, roomId });
-    })
-    .catch(err => console.error('❌ Error creating offer:', err));
-}
-
-socket.on('offer', async (data) => {
-  console.log('📨 Offer received');
-  createPeerConnection();
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  socket.emit('answer', { answer, roomId });
-});
-
-socket.on('answer', async (data) => {
-  console.log('✅ Answer received');
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-});
-
-socket.on('ice-candidate', async (data) => {
-  if (peerConnection) {
-    try {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch (err) {
-      console.error('Error adding ICE candidate:', err);
-    }
+  // If doctor, create offer (guarded by createdOffer)
+  if (role === 'doctor' && !createdOffer) {
+    createdOffer = true;
+    startCall();
+  } else {
+    console.log('ℹ️ Not doctor or offer already created; waiting for offer/answer exchange.');
   }
 });
 
-// --- Mute / Unmute ---
+async function startCall() {
+  try {
+    console.log('📞 startCall: creating offer');
+    const pc = createPeerConnection();
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('offer', { offer, roomId });
+    console.log('📤 Offer emitted');
+  } catch (err) {
+    console.error('❌ Error in startCall:', err);
+  }
+}
+
+socket.on('offer', async (data) => {
+  console.log('📨 Offer received', data);
+  try {
+    createPeerConnection();
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('answer', { answer, roomId });
+    console.log('📤 Answer emitted');
+  } catch (err) {
+    console.error('❌ Error handling offer:', err);
+  }
+});
+
+socket.on('answer', async (data) => {
+  console.log('✅ Answer received', data);
+  try {
+    if (!peerConnection) {
+      console.warn('⚠️ Received answer but no peerConnection - creating one');
+      createPeerConnection();
+    }
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+  } catch (err) {
+    console.error('❌ Error setting remote description (answer):', err);
+  }
+});
+
+socket.on('ice-candidate', async (data) => {
+  console.log('🔹 ICE candidate received', data && data.candidate && data.candidate.candidate);
+  try {
+    if (peerConnection && data && data.candidate) {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+    } else {
+      console.warn('⚠️ No peerConnection or invalid candidate');
+    }
+  } catch (err) {
+    console.error('❌ Error adding ICE candidate:', err);
+  }
+});
+
+// fallback socket-based chat display (if we used it in setupDataChannel)
+socket.on('chat-message', (data) => {
+  const chatBox = document.getElementById('chatBox');
+  if (!chatBox) return;
+  const msg = document.createElement('div');
+  msg.className = 'text-left mb-1';
+  msg.innerHTML = `<span class="bg-gray-200 px-2 py-1 rounded-lg inline-block"><strong>${data.sender}:</strong> ${data.message}</span>`;
+  chatBox.appendChild(msg);
+  chatBox.scrollTop = chatBox.scrollHeight;
+});
+
+// --- UI controls (mute/camera/end) ---
 let isMuted = false;
 muteBtn.addEventListener('click', () => {
   if (!localStream) return;
   const audioTracks = localStream.getAudioTracks();
   if (!audioTracks.length) return;
-
   isMuted = !isMuted;
   audioTracks.forEach(track => track.enabled = !isMuted);
   muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
-  muteBtn.classList.toggle('bg-gray-500', isMuted);
-  muteBtn.classList.toggle('bg-blue-600', !isMuted);
 });
 
-// --- Camera On / Off ---
 let isCameraOff = false;
 cameraBtn.addEventListener('click', () => {
   if (!localStream) return;
   const videoTracks = localStream.getVideoTracks();
   if (!videoTracks.length) return;
-
   isCameraOff = !isCameraOff;
   videoTracks.forEach(track => track.enabled = !isCameraOff);
   cameraBtn.textContent = isCameraOff ? 'Camera On' : 'Camera Off';
-  cameraBtn.classList.toggle('bg-gray-500', isCameraOff);
-  cameraBtn.classList.toggle('bg-blue-600', !isCameraOff);
 });
 
-// --- End Call ---
 function endCall(cleanupOnly = false) {
   if (peerConnection) {
     peerConnection.close();
@@ -215,24 +253,12 @@ function endCall(cleanupOnly = false) {
   }
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
   }
-
   if (!cleanupOnly) {
     socket.emit('end-call', { roomId });
     window.location.href = '/';
   }
 }
 
-endBtn.addEventListener('click', () => endCall());
-
-socket.on('call-ended', () => {
-  alert('📞 The other user has ended the call.');
-  endCall(true);
-  window.location.href = '/';
-});
-
-// --- Start ---
-initMedia().then(() => {
-  isReady = true;
-  socket.emit('ready', roomId);
-});
+endBtn.addEventListene
